@@ -1,0 +1,334 @@
+name: Benchmark
+
+permissions:
+  contents: read
+  actions: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_label:
+        description: 'Runner label to use'
+        required: true
+        type: choice
+        options:
+          - tenki-standard-autoscale
+          - tenki-standard-medium-4c-8g
+          - tenki-standard-large-8c-16g
+          - tenki-standard-large-plus-16c-32g
+        default: tenki-standard-autoscale
+
+jobs:
+  test-js:
+    runs-on: ${{ inputs.runner_label }}
+    steps:
+      - name: Checkout all commits
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - name: Setup
+        uses: ./.github/actions/setup-all
+        with:
+          bun_version: 1.2.18
+          go_version: 1.24.3
+      - name: Lint TypeScript
+        shell: bash
+        run: nx affected --target=lint --parallel=5
+      - name: Test TypeScript
+        shell: bash
+        run: nx affected --target=test --parallel=5
+      - name: Build
+        shell: bash
+        run: nx affected --target=build --configuration=production --parallel=5
+      - name: Export
+        shell: bash
+        run: nx affected --target=build --configuration=export --parallel=5
+
+  test-go:
+    runs-on: ${{ inputs.runner_label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [./renterd, ./hostd, ./walletd, ./indexd]
+    steps:
+      - name: Checkout all commits
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - name: Setup Git
+        uses: ./.github/actions/setup-git
+      - name: Setup Go
+        uses: ./.github/actions/setup-go
+        with:
+          go_version: 1.24.3
+      - name: Lint Go
+        uses: golangci/golangci-lint-action@v4
+        with:
+          working-directory: ${{ matrix.module }}
+          skip-cache: true
+      - name: Test Go
+        uses: n8maninger/action-golang-test@v2
+        with:
+          args: '-race'
+          working-directory: ${{ matrix.module }}
+          package: ./...
+
+  renterd-e2e-shard-tests:
+    runs-on: ${{ inputs.runner_label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shardIndex: [1, 2, 3, 4, 5, 6]
+        shardTotal: [6]
+    steps:
+      - name: Checkout all commits
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - name: Setup environment
+        uses: ./.github/actions/setup-all
+        with:
+          bun_version: 1.2.18
+          go_version: 1.24.3
+      - name: Install Playwright dependencies
+        shell: bash
+        run: bunx playwright install-deps
+      - name: Test e2e for renterd-e2e
+        shell: bash
+        run: nx run renterd-e2e:e2e --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
+      - name: Upload blob report to GitHub Actions Artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: renterd-e2e-blob-report-${{ matrix.shardIndex }}
+          path: blob-report
+          retention-days: 1
+
+  renterd-e2e-merge-reports:
+    if: ${{ !cancelled() }}
+    needs: [renterd-e2e-shard-tests]
+    runs-on: ${{ inputs.runner_label }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.18
+      - name: Download blob reports from GitHub Actions Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: renterd-e2e-blob-reports
+          pattern: renterd-e2e-blob-report-*
+          merge-multiple: true
+      - name: Merge into HTML Report
+        id: merge
+        run: |
+          if [ -d "./renterd-e2e-blob-reports" ]; then
+            echo "Merging reports..."
+            bunx playwright merge-reports --reporter html ./renterd-e2e-blob-reports
+            echo "continue=true" >> $GITHUB_OUTPUT
+          else
+            echo "No reports found. Skipping merge."
+            echo "continue=false" >> $GITHUB_OUTPUT
+          fi
+      - name: Upload HTML report
+        if: ${{ steps.merge.outputs.continue == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: renterd-e2e-html-report--attempt-${{ github.run_attempt }}
+          path: playwright-report
+          retention-days: 2
+
+  hostd-e2e-shard-tests:
+    runs-on: ${{ inputs.runner_label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shardIndex: [1, 2, 3, 4, 5, 6]
+        shardTotal: [6]
+    steps:
+      - name: Checkout all commits
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - name: Setup environment
+        uses: ./.github/actions/setup-all
+        with:
+          bun_version: 1.2.18
+          go_version: 1.24.3
+      - name: Install Playwright dependencies
+        shell: bash
+        run: bunx playwright install-deps
+      - name: Test e2e for hostd-e2e
+        shell: bash
+        run: nx run hostd-e2e:e2e --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
+      - name: Upload blob report to GitHub Actions Artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: hostd-e2e-blob-report-${{ matrix.shardIndex }}
+          path: blob-report
+          retention-days: 1
+
+  hostd-e2e-merge-reports:
+    if: ${{ !cancelled() }}
+    needs: [hostd-e2e-shard-tests]
+    runs-on: ${{ inputs.runner_label }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.18
+      - name: Download blob reports from GitHub Actions Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: hostd-e2e-blob-reports
+          pattern: hostd-e2e-blob-report-*
+          merge-multiple: true
+      - name: Merge into HTML Report
+        id: merge
+        run: |
+          if [ -d "./hostd-e2e-blob-reports" ]; then
+            echo "Merging reports..."
+            bunx playwright merge-reports --reporter html ./hostd-e2e-blob-reports
+            echo "continue=true" >> $GITHUB_OUTPUT
+          else
+            echo "No reports found. Skipping merge."
+            echo "continue=false" >> $GITHUB_OUTPUT
+          fi
+      - name: Upload HTML report
+        if: ${{ steps.merge.outputs.continue == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: hostd-e2e-html-report--attempt-${{ github.run_attempt }}
+          path: playwright-report
+          retention-days: 2
+
+  walletd-e2e-shard-tests:
+    runs-on: ${{ inputs.runner_label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shardIndex: [1, 2, 3, 4, 5, 6]
+        shardTotal: [6]
+    steps:
+      - name: Checkout all commits
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - name: Setup environment
+        uses: ./.github/actions/setup-all
+        with:
+          bun_version: 1.2.18
+          go_version: 1.24.3
+      - name: Install Playwright dependencies
+        shell: bash
+        run: bunx playwright install-deps
+      - name: Test e2e for walletd-e2e
+        shell: bash
+        run: nx run walletd-e2e:e2e --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
+      - name: Upload blob report to GitHub Actions Artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: walletd-e2e-blob-report-${{ matrix.shardIndex }}
+          path: blob-report
+          retention-days: 1
+
+  walletd-e2e-merge-reports:
+    if: ${{ !cancelled() }}
+    needs: [walletd-e2e-shard-tests]
+    runs-on: ${{ inputs.runner_label }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.18
+      - name: Download blob reports from GitHub Actions Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: walletd-e2e-blob-reports
+          pattern: walletd-e2e-blob-report-*
+          merge-multiple: true
+      - name: Merge into HTML Report
+        id: merge
+        run: |
+          if [ -d "./walletd-e2e-blob-reports" ]; then
+            echo "Merging reports..."
+            bunx playwright merge-reports --reporter html ./walletd-e2e-blob-reports
+            echo "continue=true" >> $GITHUB_OUTPUT
+          else
+            echo "No reports found. Skipping merge."
+            echo "continue=false" >> $GITHUB_OUTPUT
+          fi
+      - name: Upload HTML report
+        if: ${{ steps.merge.outputs.continue == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: walletd-e2e-html-report--attempt-${{ github.run_attempt }}
+          path: playwright-report
+          retention-days: 2
+
+  explorer-e2e-shard-tests:
+    runs-on: ${{ inputs.runner_label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shardIndex: [1, 2, 3, 4, 5, 6]
+        shardTotal: [6]
+    steps:
+      - name: Checkout all commits
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - name: Setup environment
+        uses: ./.github/actions/setup-all
+        with:
+          bun_version: 1.2.18
+          go_version: 1.24.3
+      - name: Install Playwright dependencies
+        shell: bash
+        run: bunx playwright install-deps
+      - name: Test e2e for explorer-e2e
+        shell: bash
+        run: nx run explorer-e2e:e2e --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
+      - name: Upload blob report to GitHub Actions Artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: explorer-e2e-blob-report-${{ matrix.shardIndex }}
+          path: blob-report
+          retention-days: 1
+
+  explorer-e2e-merge-reports:
+    if: ${{ !cancelled() }}
+    needs: [explorer-e2e-shard-tests]
+    runs-on: ${{ inputs.runner_label }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.18
+      - name: Download blob reports from GitHub Actions Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: explorer-e2e-blob-reports
+          pattern: explorer-e2e-blob-report-*
+          merge-multiple: true
+      - name: Merge into HTML Report
+        id: merge
+        run: |
+          if [ -d "./explorer-e2e-blob-reports" ]; then
+            echo "Merging reports..."
+            bunx playwright merge-reports --reporter html ./explorer-e2e-blob-reports
+            echo "continue=true" >> $GITHUB_OUTPUT
+          else
+            echo "No reports found. Skipping merge."
+            echo "continue=false" >> $GITHUB_OUTPUT
+          fi
+      - name: Upload HTML report
+        if: ${{ steps.merge.outputs.continue == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: explorer-e2e-html-report--attempt-${{ github.run_attempt }}
+          path: playwright-report
+          retention-days: 2

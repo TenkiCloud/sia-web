@@ -10,7 +10,7 @@ permissions:
 on:
   push:
     branches:
-      - main
+      - disabled-main # Disabled for benchmark testing
 
 # This is for .npmrc. Nx automatically creates an .npmrc before changesets runs
 # and creates one itself, so we need to explicitly have one.
